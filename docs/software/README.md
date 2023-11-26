@@ -350,3 +350,544 @@ COMMIT;
 ```
 
 ## RESTfull сервіс для управління даними
+
+### Модель бази даних
+
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int            @id @default(autoincrement())
+  firstName     String         @map("first_name")
+  lastName      String         @map("last_name")
+  username      String         @unique
+  email         String         @unique
+  password      String
+  role          Role           @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  roleId        Int            @map("role_id")
+  actions       Action[]
+  feedbacks     Feedback[]
+  mediaRequests MediaRequest[]
+
+  @@map("users")
+}
+
+enum RoleName {
+  USER
+  TECHNICAL_EXPERT
+}
+
+model Role {
+  id          Int                 @id @default(autoincrement())
+  name        RoleName
+  description String?
+  users       User[]
+  permissions RoleHasPermission[]
+
+  @@map("roles")
+}
+
+model RoleHasPermission {
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  roleId       Int        @map("role_id")
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  permissionId Int        @map("permission_id")
+
+  @@id([roleId, permissionId])
+  @@map("role_has_permission")
+}
+
+model Permission {
+  id    Int                 @id @default(autoincrement())
+  name  String
+  roles RoleHasPermission[]
+
+  @@map("permissions")
+}
+
+model Feedback {
+  id             Int          @id @default(autoincrement())
+  body           String
+  rating         Float
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         Int          @map("user_id")
+  mediaRequest   MediaRequest @relation(fields: [mediaRequestId], references: [id], onDelete: Cascade)
+  mediaRequestId Int          @map("media_request)id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("feedbacks")
+}
+
+model MediaRequest {
+  id          Int        @id @default(autoincrement())
+  name        String
+  description String?
+  keywords    String?
+  type        String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int        @map("user_id")
+  feedbacks   Feedback[]
+  sources     BasedOn[]
+  actions     Action[]
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  @@map("media_requests")
+}
+
+model BasedOn {
+  source         Source       @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId       Int          @map("source_id")
+  mediaRequest   MediaRequest @relation(fields: [mediaRequestId], references: [id], onDelete: Cascade)
+  mediaRequestId Int          @map("media_request_id")
+
+  @@id([sourceId, mediaRequestId])
+  @@map("based_on")
+}
+
+model Source {
+  id            Int       @id @default(autoincrement())
+  name          String
+  url           String
+  mediaRequests BasedOn[]
+  labels        Label[]
+  actions       Action[]
+
+  @@map("sources")
+}
+
+model Label {
+  source   Source @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId Int    @map("source_id")
+  tag      Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  tagId    Int    @map("tag_id")
+
+  @@id([sourceId, tagId])
+  @@map("labels")
+}
+
+enum TagName {
+  SPORT
+  SCIENCE_AND_TECHOLOGY
+  ENTERTAINMENT
+  FASHION_AND_STYLE
+  MUSIC
+  FOOD_AND_COOKING
+  TOURISM
+  MOVIES_AND_TELEVISION
+}
+
+model Tag {
+  id     Int     @id @default(autoincrement())
+  name   TagName
+  labels Label[]
+
+  @@map("tags")
+}
+
+model Action {
+  mediaRequest   MediaRequest @relation(fields: [mediaRequestId], references: [id], onDelete: Cascade)
+  mediaRequestId Int          @map("media_request_id")
+  source         Source       @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId       Int          @map("source_id")
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         Int          @map("user_id")
+  state          State        @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  stateId        Int          @map("state_id")
+
+  @@id([mediaRequestId, sourceId, userId, stateId])
+  @@map("actions")
+}
+
+enum StateName {
+  SUBSCRIBE
+  UNSUBSCRIBE
+  QUARANTINE
+}
+
+model State {
+  id          Int       @id @default(autoincrement())
+  displayName StateName @map("display_name")
+  actions     Action[]
+
+  @@map("states")
+}
+```
+
+### Сервіс підключення до бази даних
+
+```ts
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit {
+  async onModuleInit() {
+    return this.$connect();
+  }
+}
+```
+
+### Модуль підключення до бази даних
+
+```ts
+import { Global, Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
+
+@Global()
+@Module({
+  providers: [PrismaService],
+  exports: [PrismaService],
+})
+export class PrismaModule {}
+```
+
+
+### Модуль та контролер для обробки запитів
+
+```ts
+import { Module } from '@nestjs/common';
+import { PermissionController } from './permission.controller';
+import { PermissionService } from './permission.service';
+import {PrismaModule} from "../prisma/prisma.module";
+
+@Module({
+  imports: [PrismaModule],
+  controllers: [PermissionController],
+  providers: [PermissionService],
+})
+export class PermissionModule {}
+```
+
+```ts
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
+import { PermissionService } from './permission.service';
+import { CreatePermissionDTO } from './dtos/create-permission.dto';
+import { PermissionResponse } from './permission.response';
+import {
+  ApiBadRequestResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
+import { PermissionPipe } from './pipes/permission.pipe';
+import { UpdatePermissionDto } from './dtos/update-permission.dto';
+
+@ApiTags('permissions')
+@Controller('permissions')
+export class PermissionController {
+  constructor(private permissionService: PermissionService) {}
+
+  @ApiOkResponse({
+    type: PermissionResponse,
+  })
+  @ApiBadRequestResponse({
+    description: `
+        Name cannot be empty
+        Name must be a string`,
+  })
+  @ApiOperation({
+    summary: 'The endpoint to create a permission',
+  })
+  @Post()
+  async createPermission(@Body() body: CreatePermissionDTO): Promise<PermissionResponse> {
+    return await this.permissionService.createPermission(body);
+  }
+
+  @ApiOkResponse({
+    type: PermissionResponse,
+  })
+  @ApiBadRequestResponse({
+    description: `
+      Permission with such id was not found`,
+  })
+  @ApiParam({
+    name: 'id',
+    type: Number,
+    required: true,
+    description: 'The id of existing permission',
+  })
+  @ApiOperation({
+    summary: 'The endpoint to retrieve a permission by id',
+  })
+  @Get(':id')
+  async getPermission(
+    @Param('id', ParseIntPipe, PermissionPipe) id: number,
+  ): Promise<PermissionResponse> {
+    return await this.permissionService.getPermission(id);
+  }
+
+  @ApiOkResponse({
+    type: [PermissionResponse],
+  })
+  @ApiOperation({
+    summary: 'The endpoint to retrieve all existing permissions',
+  })
+  @Get()
+  async getPermissions(): Promise<PermissionResponse[]> {
+    return await this.permissionService.getPermissions();
+  }
+
+  @ApiOkResponse({
+    type: PermissionResponse,
+  })
+  @ApiBadRequestResponse({
+    description: `
+      Permission with such id was not found
+      Name must be a string`,
+  })
+  @ApiParam({
+    name: 'id',
+    type: Number,
+    required: true,
+    description: 'The id of existing permission',
+  })
+  @ApiOperation({
+    summary: 'The endpoint to update existing permission by id',
+  })
+  @Patch(':id')
+  async updatePermission(
+    @Param('id', ParseIntPipe, PermissionPipe) id: number,
+    @Body() body: UpdatePermissionDto,
+  ): Promise<PermissionResponse> {
+    return await this.permissionService.updatePermission(id, body);
+  }
+
+  @ApiOkResponse({
+    type: PermissionResponse,
+  })
+  @ApiBadRequestResponse({
+    description: `
+      Permission with such id was not found`,
+  })
+  @ApiParam({
+    name: 'id',
+    type: Number,
+    required: true,
+    description: 'The id of existing permission',
+  })
+  @ApiOperation({
+    summary: 'The endpoint to delete a permission by id',
+  })
+  @Delete(':id')
+  async deletePermission(
+    @Param('id', ParseIntPipe, PermissionPipe) id: number,
+  ): Promise<PermissionResponse> {
+    return await this.permissionService.deletePermission(id);
+  }
+}
+```
+
+### Сервіс для обробки запитів
+
+```ts
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreatePermissionDTO } from './dtos/create-permission.dto';
+import { PermissionResponse } from './permission.response';
+import { UpdatePermissionDto } from './dtos/update-permission.dto';
+
+@Injectable()
+export class PermissionService {
+  constructor(private prisma: PrismaService) {}
+
+  async createPermission(data: CreatePermissionDTO): Promise<PermissionResponse> {
+    return this.prisma.permission.create({
+      data,
+    });
+  }
+
+  async getPermission(id: number): Promise<PermissionResponse> {
+    return this.prisma.permission.findUnique({
+      where: {
+        id,
+      },
+    });
+  }
+
+  async getPermissions(): Promise<PermissionResponse[]> {
+    return this.prisma.permission.findMany();
+  }
+
+  async updatePermission(id: number, data: UpdatePermissionDto): Promise<PermissionResponse> {
+    return this.prisma.permission.update({
+      data,
+      where: {
+        id,
+      },
+    });
+  }
+
+  async deletePermission(id: number): Promise<PermissionResponse> {
+    return this.prisma.permission.delete({
+      where: {
+        id,
+      },
+    });
+  }
+}
+```
+
+### Dto для створення дозволів
+
+```ts
+import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class CreatePermissionDTO {
+  @ApiProperty({
+    description: 'The name of the permission',
+  })
+  @IsNotEmpty({ message: 'Name cannot be empty' })
+  @IsString({ message: 'Name must be a string' })
+  name: string;
+}
+```
+
+### Dto для оновлення дозволів
+
+```ts
+import { IsOptional, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class UpdatePermissionDto {
+  @ApiProperty({
+    description: 'The name of the permission',
+  })
+  @IsString({ message: 'Name must be a string' })
+  @IsOptional()
+  name?: string;
+}
+```
+
+
+### Відповідь для дозволів
+
+```ts
+import { ApiProperty } from '@nestjs/swagger';
+
+export class PermissionResponse {
+  @ApiProperty({
+    description: 'The id of the permission',
+  })
+  id: number;
+
+  @ApiProperty({
+    description: 'The name of the permission',
+  })
+  name: string;
+}
+```
+
+### Validation pipe для обробки помилок клієнта
+
+```ts
+import { BadRequestException, Injectable, PipeTransform } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { PermissionResponse } from '../permission.response';
+
+@Injectable()
+export class PermissionPipe implements PipeTransform {
+  constructor(private prisma: PrismaService) {}
+
+  async transform(id: number) {
+    const permission = await this.prisma.permission.findUnique({
+      where: {
+        id,
+      },
+    });
+
+    if (!permission) {
+      throw new BadRequestException('Permission with such id was not found');
+    }
+
+    return id;
+  }
+}
+```
+
+### Головний модуль API
+
+```ts
+import { Module } from '@nestjs/common';
+import { PermissionModule } from './permission/permission.module';
+
+@Module({
+  imports: [PermissionModule],
+})
+export class AppModule {}
+```
+
+
+### Entry point API (main.ts)
+
+```ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+    }),
+  );
+
+  const config = new DocumentBuilder()
+    .setTitle('Permission API')
+    .setDescription('RESTful service for permissions')
+    .setVersion('1.0')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api', app, document);
+
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+## Документація з використанням Swagger
+
+### POST-запит
+
+<p>
+    <img src="./screenshots/post.png">
+</p>
+
+### GET-запит (id)
+
+<p>
+    <img src="./screenshots/get.png">
+</p>
+
+### GET-запит (отримати всі)
+
+
+<p>
+    <img src="./screenshots/get-all.png">
+</p>
+
+### PATCH-запит 
+
+<p>
+    <img src="./screenshots/patch.png">
+</p>
+
+
+### DELETE-запит 
+
+<p>
+    <img src="./screenshots/delete.png">
+</p>
